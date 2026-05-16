@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from telegram.ext import filters
 
 # === ВСТАВЬТЕ СЮДА ВАШ ТОКЕН ОТ @BotFather ===
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # ← ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ТОКЕН!
+BOT_TOKEN = "8869399865:AAGi1X5CE1RArnz4XJRgXgaQkWKz99UpVzY"  # ← ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ТОКЕН!
 
 # --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
 def create_database():
