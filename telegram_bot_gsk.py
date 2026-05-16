@@ -1,10 +1,10 @@
-import sqlite3
+﻿import sqlite3
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # === ВСТАВЬТЕ СЮДА ВАШ ТОКЕН ОТ @BotFather ===
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # ← ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ТОКЕН!
+BOT_TOKEN = "8508081448:AAGQtwnZbhx2OMYrXH-qyIa0nON9XVlPHeM"  # ← ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ТОКЕН!
 
 # --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
 def create_database():
