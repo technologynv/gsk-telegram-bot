@@ -1,11 +1,14 @@
 import sqlite3
 import os
+import requests
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
+# === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+SMS_API_KEY = os.environ.get("SMS_API_KEY", "")  # Ключ от sms.ru (можно получить бесплатно)
 
 app_flask = Flask(__name__)
 
@@ -17,6 +20,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host="0.0.0.0", port=port)
 
+# --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
 def create_database():
     conn = sqlite3.connect('gsk_database.db')
     cursor = conn.cursor()
@@ -32,11 +36,13 @@ def create_database():
             garage_number INTEGER UNIQUE
         )
     ''')
+    
     cursor.execute("SELECT COUNT(*) FROM garage_owners")
     if cursor.fetchone()[0] == 0:
+        # Обновлённые данные с правильными телефонами
         test_data = [
-            ("Иванов", "Пётр", "Сергеевич", "ул. Ленина 12, кв. 5", "+7-911-123-45-67", 12500.00, 101),
-            ("Петрова", "Мария", "Ивановна", "пр. Мира 8, кв. 24", "+7-912-234-56-78", -3400.50, 102),
+            ("Иванов", "Пётр", "Сергеевич", "ул. Ленина 12, кв. 5", "+79822082501", 12500.00, 101),
+            ("Петрова", "Мария", "Ивановна", "пр. Мира 8, кв. 24", "+79195316255", -3400.50, 102),
             ("Сидоров", "Алексей", "Викторович", "ул. Гагарина 3, кв. 11", "+7-913-345-67-89", 0.00, 103),
             ("Кузнецова", "Елена", "Андреевна", "ул. Пушкина 22, кв. 7", "+7-921-456-78-90", 25600.75, 201),
             ("Михайлов", "Дмитрий", "Николаевич", "ул. Чехова 1, кв. 45", "+7-922-567-89-01", -1500.00, 202),
@@ -68,40 +74,94 @@ def update_debt(garage_num, new_debt):
     conn.commit()
     conn.close()
 
+# --- ФУНКЦИЯ ОТПРАВКИ СМС (через sms.ru) ---
+def send_sms(phone_number, message):
+    """Отправляет СМС через sms.ru (бесплатно до 100 СМС в день)"""
+    if not SMS_API_KEY:
+        print("❌ SMS_API_KEY не задан")
+        return False
+    
+    # Очищаем номер от лишних символов
+    clean_number = phone_number.replace("+", "").replace("-", "").replace(" ", "")
+    
+    url = "https://sms.ru/sms/send"
+    params = {
+        "api_id": SMS_API_KEY,
+        "to": clean_number,
+        "msg": message,
+        "json": 1
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data.get("status") == "OK":
+            print(f"✅ СМС отправлено на {phone_number}")
+            return True
+        else:
+            print(f"❌ Ошибка СМС: {data}")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка при отправке СМС: {e}")
+        return False
+
+# --- ОБРАБОТЧИКИ КОМАНД БОТА ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔍 Поиск по номеру гаража", callback_data='search')],
         [InlineKeyboardButton("📋 Список всех владельцев", callback_data='list')],
         [InlineKeyboardButton("✏️ Изменить задолженность", callback_data='edit')],
+        [InlineKeyboardButton("📱 Отправить СМС должнику", callback_data='sms')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🏢 *ГСК - Учёт задолженностей*\n\nВыберите действие:", reply_markup=reply_markup, parse_mode='Markdown')
+    await update.message.reply_text(
+        "🏢 *ГСК - Учёт задолженностей*\n\nВыберите действие:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
     if query.data == 'search':
         await query.edit_message_text("Введите номер гаража:")
         context.user_data['action'] = 'search'
+    
     elif query.data == 'list':
         owners = get_all_owners()
         if not owners:
             await query.edit_message_text("Нет данных о владельцах.")
             return
+        
         message = "📋 *Список владельцев:*\n\n"
         for owner in owners:
             last_name, first_name, phone, debt, garage_num = owner
             debt_symbol = "🔴" if debt > 0 else "🟢" if debt < 0 else "⚪"
-            message += f"*№{garage_num}*: {last_name} {first_name}\n📞 {phone} | {debt_symbol} {abs(debt):,.2f} руб.\n\n"
-        await query.edit_message_text(message, parse_mode='Markdown')
+            # Показываем телефон только для гаражей 101 и 102
+            phone_display = phone if garage_num in [101, 102] else "скрыт"
+            message += f"*№{garage_num}*: {last_name} {first_name}\n📞 {phone_display} | {debt_symbol} {abs(debt):,.2f} руб.\n\n"
+            if len(message) > 3900:
+                await query.edit_message_text(message, parse_mode='Markdown')
+                message = ""
+        
+        if message:
+            await query.edit_message_text(message, parse_mode='Markdown')
+        
         await start(update, context)
+    
     elif query.data == 'edit':
         await query.edit_message_text("Введите номер гаража для изменения долга:")
         context.user_data['action'] = 'edit_garage'
+    
+    elif query.data == 'sms':
+        await query.edit_message_text("Введите номер гаража должника (101 или 102):")
+        context.user_data['action'] = 'sms_garage'
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     action = context.user_data.get('action')
+    
     if action == 'search':
         try:
             garage_num = int(text)
@@ -115,8 +175,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ Гараж №{garage_num} не найден")
         except ValueError:
             await update.message.reply_text("❌ Введите корректный номер гаража")
+        
         await start(update, context)
         context.user_data['action'] = None
+    
     elif action == 'edit_garage':
         try:
             garage_num = int(text)
@@ -124,22 +186,123 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if owner:
                 context.user_data['edit_garage_num'] = garage_num
                 context.user_data['action'] = 'edit_amount'
-                await update.message.reply_text(f"📊 *Гараж №{garage_num}*\nТекущий долг: *{owner[5]:,.2f} руб.*\n\nВведите новую сумму долга (отрицательное число - переплата, 0 - расчёты урегулированы):", parse_mode='Markdown')
+                await update.message.reply_text(
+                    f"📊 *Гараж №{garage_num}*\n"
+                    f"Текущий долг: *{owner[5]:,.2f} руб.*\n\n"
+                    f"Введите новую сумму долга:\n"
+                    f"(отрицательное число - переплата, 0 - расчёты урегулированы)",
+                    parse_mode='Markdown'
+                )
             else:
                 await update.message.reply_text(f"❌ Гараж №{garage_num} не найден")
                 context.user_data['action'] = None
         except ValueError:
             await update.message.reply_text("❌ Введите корректный номер гаража")
+    
     elif action == 'edit_amount':
         try:
             new_debt = float(text.replace(',', '.'))
             garage_num = context.user_data.get('edit_garage_num')
             update_debt(garage_num, new_debt)
-            await update.message.reply_text(f"✅ *Задолженность обновлена!*\n\n🏢 Гараж №{garage_num}\n💰 Новая сумма: *{abs(new_debt):,.2f} руб.*", parse_mode='Markdown')
+            
+            # Если долг положительный, предложим отправить СМС
+            owner = get_owner_by_garage(garage_num)
+            await update.message.reply_text(
+                f"✅ *Задолженность обновлена!*\n\n"
+                f"🏢 Гараж №{garage_num}\n"
+                f"💰 Новая сумма: *{abs(new_debt):,.2f} руб.*",
+                parse_mode='Markdown'
+            )
+            
+            # Если появился долг (стал положительным) и это гараж 101 или 102, предложим СМС
+            if new_debt > 0 and garage_num in [101, 102] and owner and owner[5] < new_debt:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📱 Отправить СМС должнику", callback_data=f'sms_now_{garage_num}')],
+                    [InlineKeyboardButton("❌ Не отправлять", callback_data='no_sms')]
+                ])
+                await update.message.reply_text(
+                    f"⚠️ Внимание! У владельца гаража №{garage_num} образовалась задолженность.\n"
+                    f"Отправить СМС-уведомление?",
+                    reply_markup=keyboard
+                )
+            
             context.user_data['action'] = None
             await start(update, context)
         except ValueError:
             await update.message.reply_text("❌ Введите корректное число")
+    
+    elif action == 'sms_garage':
+        try:
+            garage_num = int(text)
+            if garage_num not in [101, 102]:
+                await update.message.reply_text("❌ СМС можно отправить только для гаражей 101 и 102")
+                await start(update, context)
+                context.user_data['action'] = None
+                return
+            
+            owner = get_owner_by_garage(garage_num)
+            if not owner:
+                await update.message.reply_text(f"❌ Гараж №{garage_num} не найден")
+                await start(update, context)
+                context.user_data['action'] = None
+                return
+            
+            context.user_data['sms_garage_num'] = garage_num
+            context.user_data['action'] = 'sms_text'
+            
+            # Показываем информацию о должнике
+            last_name, first_name, _, _, phone, debt, _ = owner
+            debt_abs = abs(debt)
+            debt_status = "должен" if debt > 0 else "имеет переплату" if debt < 0 else "расчёты урегулированы"
+            
+            await update.message.reply_text(
+                f"📱 *Отправка СМС*\n\n"
+                f"🏢 Гараж №{garage_num}\n"
+                f"👤 Владелец: {last_name} {first_name}\n"
+                f"📞 Телефон: {phone}\n"
+                f"💰 Сумма: {debt_abs:.2f} руб. ({debt_status})\n\n"
+                f"Введите текст СМС-сообщения:",
+                parse_mode='Markdown'
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Введите корректный номер гаража")
+    
+    elif action == 'sms_text':
+        sms_text = text
+        garage_num = context.user_data.get('sms_garage_num')
+        owner = get_owner_by_garage(garage_num)
+        
+        if owner:
+            phone = owner[4]
+            success = send_sms(phone, sms_text)
+            if success:
+                await update.message.reply_text(f"✅ СМС успешно отправлено на номер {phone}")
+            else:
+                await update.message.reply_text(
+                    f"❌ Не удалось отправить СМС.\n\n"
+                    f"Проверьте API ключ sms.ru или отправьте сообщение вручную на номер {phone}"
+                )
+        else:
+            await update.message.reply_text("❌ Ошибка: владелец не найден")
+        
+        context.user_data['action'] = None
+        await start(update, context)
+    
+    elif 'sms_now_' in str(action) if isinstance(action, str) else False:
+        # Обработка кнопки "Отправить СМС" после изменения долга
+        garage_num = int(action.split('_')[2])
+        owner = get_owner_by_garage(garage_num)
+        if owner:
+            phone = owner[4]
+            last_name, first_name, _, _, _, debt, _ = owner
+            sms_text = f"Уважаемый {first_name} {last_name}! Задолженность по гаражу №{garage_num} составляет {abs(debt):.2f} руб. Просим оплатить."
+            success = send_sms(phone, sms_text)
+            if success:
+                await update.callback_query.message.reply_text(f"✅ СМС отправлено на {phone}")
+            else:
+                await update.callback_query.message.reply_text(f"❌ Ошибка отправки СМС")
+        context.user_data['action'] = None
+        await start(update, update.callback_query.message)
 
 def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
