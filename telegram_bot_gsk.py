@@ -1,6 +1,8 @@
 import sqlite3
 import os
-import requests
+import urllib.parse
+import urllib.request
+import json
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -8,7 +10,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 # === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-SMS_API_KEY = os.environ.get("SMS_API_KEY", "")  # Ключ от sms.ru (можно получить бесплатно)
+SMS_API_KEY = os.environ.get("SMS_API_KEY", "")
 
 app_flask = Flask(__name__)
 
@@ -25,7 +27,6 @@ def create_database():
     conn = sqlite3.connect('gsk_database.db')
     cursor = conn.cursor()
     
-    # Создаём таблицу если её нет
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS garage_owners (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,12 +40,8 @@ def create_database():
         )
     ''')
     
-    # Проверяем, есть ли уже данные
     cursor.execute("SELECT COUNT(*) FROM garage_owners")
-    count = cursor.fetchone()[0]
-    
-    if count == 0:
-        # Если база пустая - создаём с новыми телефонами
+    if cursor.fetchone()[0] == 0:
         test_data = [
             ("Иванов", "Пётр", "Сергеевич", "ул. Ленина 12, кв. 5", "+79822082501", 12500.00, 101),
             ("Петрова", "Мария", "Ивановна", "пр. Мира 8, кв. 24", "+79195316255", -3400.50, 102),
@@ -54,13 +51,10 @@ def create_database():
         ]
         cursor.executemany('''INSERT INTO garage_owners (last_name, first_name, patronymic, address, phone, debt, garage_number) VALUES (?, ?, ?, ?, ?, ?, ?)''', test_data)
         conn.commit()
-        print("✅ База данных создана с новыми телефонами")
     else:
-        # Если база уже существует - обновляем телефоны для гаражей 101 и 102
         cursor.execute("UPDATE garage_owners SET phone = '+79822082501' WHERE garage_number = 101")
         cursor.execute("UPDATE garage_owners SET phone = '+79195316255' WHERE garage_number = 102")
         conn.commit()
-        print("✅ Телефоны для гаражей 101 и 102 обновлены")
     
     conn.close()
 
@@ -87,33 +81,26 @@ def update_debt(garage_num, new_debt):
     conn.commit()
     conn.close()
 
-# --- ФУНКЦИЯ ОТПРАВКИ СМС (через sms.ru) ---
+# --- ФУНКЦИЯ ОТПРАВКИ СМС (через urllib, без requests) ---
 def send_sms(phone_number, message):
-    """Отправляет СМС через sms.ru (бесплатно до 100 СМС в день)"""
+    """Отправляет СМС через sms.ru без использования сторонних библиотек"""
     if not SMS_API_KEY:
         print("❌ SMS_API_KEY не задан")
         return False
     
-    # Очищаем номер от лишних символов
     clean_number = phone_number.replace("+", "").replace("-", "").replace(" ", "")
-    
-    url = "https://sms.ru/sms/send"
-    params = {
-        "api_id": SMS_API_KEY,
-        "to": clean_number,
-        "msg": message,
-        "json": 1
-    }
+    encoded_message = urllib.parse.quote(message)
+    url = f"https://sms.ru/sms/send?api_id={SMS_API_KEY}&to={clean_number}&msg={encoded_message}&json=1"
     
     try:
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data.get("status") == "OK":
-            print(f"✅ СМС отправлено на {phone_number}")
-            return True
-        else:
-            print(f"❌ Ошибка СМС: {data}")
-            return False
+        with urllib.request.urlopen(url, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            if data.get("status") == "OK":
+                print(f"✅ СМС отправлено на {phone_number}")
+                return True
+            else:
+                print(f"❌ Ошибка СМС: {data}")
+                return False
     except Exception as e:
         print(f"❌ Ошибка при отправке СМС: {e}")
         return False
@@ -151,7 +138,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for owner in owners:
             last_name, first_name, phone, debt, garage_num = owner
             debt_symbol = "🔴" if debt > 0 else "🟢" if debt < 0 else "⚪"
-            # Показываем телефон только для гаражей 101 и 102
             phone_display = phone if garage_num in [101, 102] else "скрыт"
             message += f"*№{garage_num}*: {last_name} {first_name}\n📞 {phone_display} | {debt_symbol} {abs(debt):,.2f} руб.\n\n"
             if len(message) > 3900:
@@ -297,7 +283,7 @@ def run_bot():
 if __name__ == "__main__":
     print("🚀 Запуск бота и веб-сервера...")
     create_database()
-    print("✅ База данных обновлена")
+    print("✅ База данных создана/проверена")
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
