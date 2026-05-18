@@ -11,10 +11,10 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
-# Данные для SMS Gateway Cloud Server
-SMS_USERNAME = "kondornv"
-SMS_PASSWORD = "6702nV794157"
-SMS_CLOUD_URL = "https://api.sms-gate.app/3rdparty/v1/messages"
+# Данные GoSMS Client (ваши из приложения)
+GOSMS_API_ID = "6a0b1c81ee048685ca86a280"
+GOSMS_API_KEY = "2b7242579c04fb964cb97b0be3ec1a7f"
+GOSMS_URL = "http://127.0.0.1:8080/api/send"  # Локальный адрес
 
 app_flask = Flask(__name__)
 
@@ -56,7 +56,6 @@ def create_database():
         cursor.executemany('''INSERT INTO garage_owners (last_name, first_name, patronymic, address, phone, debt, garage_number) VALUES (?, ?, ?, ?, ?, ?, ?)''', test_data)
         conn.commit()
     else:
-        # Обновляем телефон для гаража 103 при каждом запуске
         cursor.execute("UPDATE garage_owners SET phone = '+79028582408' WHERE garage_number = 103")
         conn.commit()
     
@@ -85,11 +84,11 @@ def update_debt(garage_num, new_debt):
     conn.commit()
     conn.close()
 
-# --- ФУНКЦИЯ ОТПРАВКИ СМС через SMS Gateway Cloud Server ---
+# --- ФУНКЦИЯ ОТПРАВКИ СМС через GoSMS Client ---
 def send_sms(phone_number, message):
-    """Отправляет СМС через SMS Gateway Cloud Server"""
+    """Отправляет СМС через GoSMS Client на том же телефоне"""
     
-    # Очищаем номер телефона в формат E.164 (+7XXXXXXXXXX)
+    # Очищаем номер телефона
     clean_number = phone_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "").replace("+", "")
     if clean_number.startswith('8'):
         clean_number = '7' + clean_number[1:]
@@ -100,42 +99,35 @@ def send_sms(phone_number, message):
     print(f"📤 Отправка СМС на номер: {clean_number}")
     print(f"📝 Текст: {message[:50]}...")
     
-    # Формируем запрос согласно документации SMS Gateway
+    # Формируем запрос для GoSMS Client
     data = {
-        "textMessage": {
-            "text": message
-        },
-        "phoneNumbers": [clean_number]
+        "api_id": GOSMS_API_ID,
+        "api_key": GOSMS_API_KEY,
+        "to": clean_number,
+        "text": message
     }
     
-    # Basic Authentication
-    credentials = base64.b64encode(f"{SMS_USERNAME}:{SMS_PASSWORD}".encode()).decode()
-    
     try:
-        req = urllib.request.Request(SMS_CLOUD_URL)
+        req = urllib.request.Request(GOSMS_URL)
         req.add_header('Content-Type', 'application/json; charset=utf-8')
-        req.add_header('Authorization', f'Basic {credentials}')
         json_data = json.dumps(data, ensure_ascii=False).encode('utf-8')
         
-        with urllib.request.urlopen(req, json_data, timeout=20) as response:
+        with urllib.request.urlopen(req, json_data, timeout=15) as response:
             response_text = response.read().decode('utf-8')
-            print(f"✅ Ответ от сервера: {response_text}")
-            print(f"✅ СМС успешно отправлено на {phone_number}")
+            print(f"✅ Ответ от шлюза: {response_text}")
+            print(f"✅ СМС отправлено на {phone_number}")
             return True
             
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8') if e.fp else ''
         print(f"❌ HTTP ошибка {e.code}: {error_body}")
         if e.code == 401:
-            print("   Неправильный логин или пароль!")
-        elif e.code == 402:
-            print("   Недостаточно средств на счете! Пополните баланс в приложении.")
-        elif e.code == 403:
-            print("   Доступ запрещён. Проверьте подписку.")
+            print("   Неправильный API ключ!")
         return False
     except urllib.error.URLError as e:
         print(f"❌ Ошибка подключения: {e.reason}")
-        print("   Проверьте интернет-соединение")
+        print("   Убедитесь, что приложение GoSMS Client запущено")
+        print("   И что Local Server включён")
         return False
     except Exception as e:
         print(f"❌ Ошибка: {e}")
@@ -183,7 +175,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if message:
             await query.edit_message_text(message, parse_mode='Markdown')
         
-        # Показываем меню снова
         keyboard = [
             [InlineKeyboardButton("🔍 Поиск", callback_data='search')],
             [InlineKeyboardButton("📱 Отправить СМС", callback_data='sms')],
@@ -294,11 +285,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             
-            # Предлагаем шаблон
             template = f"Уважаемый(ая) {last_name} {first_name}! Напоминаем, что задолженность за гараж №{garage_num} составляет {debt_abs:.2f} руб. Просим оплатить до 25.05.2026."
             await update.message.reply_text(
                 f"💡 *Пример текста:*\n`{template}`\n\n"
-                f"Отправьте свой текст, или просто скопируйте этот, заменив сумму/дату.",
+                f"Отправьте свой текст, или просто скопируйте этот.",
                 parse_mode='Markdown'
             )
             
@@ -321,16 +311,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success = send_sms(phone, sms_text)
             
             if success:
-                await update.message.reply_text(f"✅ СМС успешно отправлено на номер {phone}\n\n📝 Текст: {sms_text[:100]}{'...' if len(sms_text) > 100 else ''}")
+                await update.message.reply_text(f"✅ СМС успешно отправлено на номер {phone}")
             else:
                 await update.message.reply_text(
                     f"❌ *Не удалось отправить СМС*\n\n"
                     f"📞 Номер: {phone}\n"
-                    f"🔧 Возможные причины:\n"
-                    f"• Недостаточно средств на балансе в приложении SMS Gateway\n"
-                    f"• Нет интернет-соединения\n"
-                    f"• Неправильный логин/пароль\n\n"
-                    f"💡 Проверьте статус в приложении SMS Gateway (должен быть 'Online')",
+                    f"🔧 Проверьте:\n"
+                    f"• Запущено ли приложение GoSMS Client\n"
+                    f"• Включён ли Local Server\n"
+                    f"• Правильные ли API ключи в коде",
                     parse_mode='Markdown'
                 )
         else:
@@ -351,13 +340,10 @@ if __name__ == "__main__":
     print("🚀 Запуск бота...")
     create_database()
     print("✅ База данных создана/проверена")
-    print(f"📱 SMS Gateway аккаунт: {SMS_USERNAME}")
-    print(f"🔑 Cloud Server URL: {SMS_CLOUD_URL}")
+    print(f"📱 GoSMS Client аккаунт: {GOSMS_API_ID}")
     
-    # Запускаем Flask в отдельном потоке (для health check)
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
     
-    # Запускаем бота
     run_bot()
