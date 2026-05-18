@@ -10,11 +10,10 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
-# Данные GoSMS Client
+# Данные GoSMS Client (из вашего JWT токена)
 GOSMS_API_ID = "6a0b2f44ee048685ca86a2ab"
 GOSMS_API_KEY = "e7440e2ab71bdf7f64fb98f015f85733"
-GOSMS_DEVICE_ID = "e48df872-5c6d-4f29-9c22-b76e3df56f62"
-GOSMS_URL = "https://api.gosms.ru/v1/message/send"
+GOSMS_API_URL = "https://api.gosms.app/v1/message/send"  # Облачный API
 
 app_flask = Flask(__name__)
 
@@ -84,11 +83,11 @@ def update_debt(garage_num, new_debt):
     conn.commit()
     conn.close()
 
-# --- ФУНКЦИЯ ОТПРАВКИ СМС через GoSMS Client (облачный API) ---
+# --- ФУНКЦИЯ ОТПРАВКИ СМС через облачный API GoSMS Client ---
 def send_sms(phone_number, message):
-    """Отправляет СМС через GoSMS Client облачный API"""
+    """Отправляет СМС через облачный API GoSMS Client"""
     
-    # Очищаем номер телефона
+    # Очищаем номер телефона в формат E.164 (+7XXXXXXXXXX)
     clean_number = phone_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "").replace("+", "")
     if clean_number.startswith('8'):
         clean_number = '7' + clean_number[1:]
@@ -98,46 +97,45 @@ def send_sms(phone_number, message):
     
     print(f"📤 Отправка СМС на номер: {clean_number}")
     print(f"📝 Текст: {message[:50]}...")
+    print(f"🌐 URL: {GOSMS_API_URL}")
     
-    # Формируем запрос для облачного API GoSMS
-    headers = {
-        "X-API-Key": GOSMS_API_KEY,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
+    # Формируем запрос для облачного API
+    data = {
         "api_id": GOSMS_API_ID,
+        "api_key": GOSMS_API_KEY,
         "to": clean_number,
-        "text": message,
-        "device_id": GOSMS_DEVICE_ID
+        "text": message
     }
     
     try:
-        req = urllib.request.Request(GOSMS_URL, method="POST")
-        for key, value in headers.items():
-            req.add_header(key, value)
-        json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        req = urllib.request.Request(GOSMS_API_URL, method="POST")
+        req.add_header('Content-Type', 'application/json; charset=utf-8')
+        json_data = json.dumps(data, ensure_ascii=False).encode('utf-8')
         
         with urllib.request.urlopen(req, json_data, timeout=20) as response:
             response_text = response.read().decode('utf-8')
             print(f"✅ Ответ от сервера: {response_text}")
-            print(f"✅ СМС отправлено на {phone_number}")
+            print(f"✅ СМС успешно отправлено на {phone_number}")
             return True
             
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8') if e.fp else ''
         print(f"❌ HTTP ошибка {e.code}: {error_body}")
         if e.code == 401:
-            print("   Неправильный API ключ!")
+            print("   Неправильный API ключ или api_id!")
         elif e.code == 402:
             print("   Недостаточно средств на балансе!")
+        elif e.code == 404:
+            print("   Неправильный URL API. Попробуйте другой эндпоинт.")
+        elif e.code == 400:
+            print("   Неправильный формат запроса. Проверьте параметры.")
         return False
     except urllib.error.URLError as e:
         print(f"❌ Ошибка подключения: {e.reason}")
         print("   Проверьте интернет-соединение")
         return False
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Неизвестная ошибка: {e}")
         return False
 
 # --- ОБРАБОТЧИКИ КОМАНД БОТА ---
@@ -323,10 +321,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     f"❌ *Не удалось отправить СМС*\n\n"
                     f"📞 Номер: {phone}\n"
-                    f"🔧 Проверьте:\n"
-                    f"• Достаточно ли средств на балансе GoSMS\n"
-                    f"• Правильные ли API ключи в коде\n"
-                    f"• Статус устройства в панели управления (должен быть Online)",
+                    f"🔧 Возможные причины:\n"
+                    f"• Неправильный URL API (попробуйте другой)\n"
+                    f"• Недостаточно средств на балансе\n"
+                    f"• Устройство не в сети (проверьте панель управления)\n\n"
+                    f"💡 Проверьте консоль для деталей ошибки",
                     parse_mode='Markdown'
                 )
         else:
@@ -347,7 +346,8 @@ if __name__ == "__main__":
     print("🚀 Запуск бота...")
     create_database()
     print("✅ База данных создана/проверена")
-    print(f"📱 GoSMS Device ID: {GOSMS_DEVICE_ID}")
+    print(f"📱 GoSMS API ID: {GOSMS_API_ID}")
+    print(f"🌐 API URL: {GOSMS_API_URL}")
     
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
